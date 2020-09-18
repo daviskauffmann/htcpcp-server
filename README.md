@@ -26,3 +26,9 @@ make run
 ```sh
 make clean
 ```
+
+## Resources used
+
+[Beej's Guide to Network Programming](https://beej.us/guide/bgnet/)
+
+[Jacob Sorber's multithreaded webserver series](https://www.youtube.com/watch?v=Pg_4Jz8ZIH4)

@@ -4,7 +4,10 @@
 #include <ws2tcpip.h>
 #include <pthread.h>
 
+#include "queue.h"
+
 #define PORT "3000"
+#define THREAD_POOL_SIZE 20
 
 struct header
 {
@@ -48,16 +51,25 @@ struct request
     const char *body;
 };
 
-struct request parse(const char *str)
+struct request parse(char *str)
 {
-    // TODO: implement
-    struct request r;
-    r.method = "POST";
-    r.path = "/";
-    r.headers.count = 0;
-    r.headers.items = NULL;
-    r.body = "{\"message\":\"Hello, Server!\"}";
-    return r;
+    struct request request;
+    char *line = strtok(str, "\n");
+    while (line)
+    {
+        printf("%s\n", line);
+        // first line contains the method, path, and http version
+        // subsequent lines contain the headers
+        // keep adding headers to the request structure until a blank line is found
+        // after that, the rest of the message is the body
+        line = strtok(NULL, "\n");
+    }
+    request.method = "POST";
+    request.path = "/";
+    request.headers.count = 0;
+    request.headers.items = NULL;
+    request.body = "{\"message\":\"Hello, Server!\"}";
+    return request;
 }
 
 struct response
@@ -67,50 +79,106 @@ struct response
     const char *body;
 };
 
-const char *stringify(struct response *response)
+char *stringify(struct response *response)
 {
-    // TODO: implement
     return "HTTP/1.1 200 OK\nContent-Type: application/json\nContent-Length: 28\n\n{\"message\":\"Hello, Client!\"}";
 }
 
-void *respond(void *arg)
+int sendall(SOCKET sockfd, const char *buf, int len, int flags)
 {
-    SOCKET client = *(SOCKET *)arg;
+    int total_bytes_sent = 0;
+    int bytes_left = len;
 
-    // TODO: loop until recv returns 0 and concat into request_raw
-    char request_raw[4096];
-    recv(client, request_raw, sizeof(request_raw), 0);
-    printf("REQUEST:\n%s\n", request_raw);
+    while (total_bytes_sent < len)
+    {
+        int bytes_sent = send(sockfd, buf + total_bytes_sent, bytes_left, flags);
+        if (bytes_sent <= 0)
+        {
+            return total_bytes_sent;
+        }
+        total_bytes_sent += bytes_sent;
+        bytes_left -= bytes_sent;
+    }
 
-    struct request request = parse(request_raw);
-    struct response response;
-    response.status = 200;
-    response.headers.count = 0;
-    response.headers.items = NULL;
-    addheader(&response.headers, "Content-Type", "application/json");
-    response.body = "{\"message\":\"Hello, Client!\"}";
-    char content_length[16];
-    sprintf(content_length, "%lld", strlen(response.body));
-    addheader(&response.headers, "Content-Length", content_length);
+    return total_bytes_sent;
+}
 
-    const char *response_raw = stringify(&response);
-    printf("RESPONSE:\n%s\n", response_raw);
-    send(client, response_raw, strlen(response_raw), 0);
+char *formatstring(const char *format, ...)
+{
+    va_list argv;
+    va_start(argv, format);
+    int size = vsnprintf(NULL, 0, format, argv);
+    char *stream = malloc(size);
+    vsprintf(stream, format, argv);
+    return stream;
+}
 
-    freeheaders(&response.headers);
-    freeheaders(&request.headers);
+void respond(SOCKET sockfd)
+{
+    // TODO: loop until there is no more data
+    char request_raw[65536];
+    int bytes_received = recv(sockfd, request_raw, sizeof(request_raw), 0);
+    if (bytes_received > 0)
+    {
+        struct request request = parse(request_raw);
+        struct response response;
+        response.status = 200;
+        response.headers.count = 0;
+        response.headers.items = NULL;
+        addheader(&response.headers, "Content-Type", "application/json");
+        response.body = "{\"message\":\"Hello, Client!\"}";
+        char *content_length = formatstring("%lld", strlen(response.body));
+        addheader(&response.headers, "Content-Length", content_length);
+        free(content_length);
 
-    shutdown(client, SD_BOTH);
-    closesocket(client);
+        char *response_raw = stringify(&response);
+        sendall(sockfd, response_raw, strlen(response_raw), 0);
 
-    return NULL;
+        freeheaders(&response.headers);
+        freeheaders(&request.headers);
+
+        shutdown(sockfd, SD_BOTH);
+        closesocket(sockfd);
+    }
+}
+
+struct thread_context
+{
+    struct queue *queue;
+    pthread_mutex_t *mutex;
+    pthread_cond_t *cond;
+};
+
+void *worker(void *arg)
+{
+    struct thread_context *thread_context = (struct thread_context *)arg;
+
+    for (;;)
+    {
+        // check for work on the queue
+        pthread_mutex_lock(thread_context->mutex);
+        SOCKET *p_sockfd = dequeue(thread_context->queue);
+        if (!p_sockfd)
+        {
+            pthread_cond_wait(thread_context->cond, thread_context->mutex);
+            p_sockfd = dequeue(thread_context->queue);
+        }
+        pthread_mutex_unlock(thread_context->mutex);
+        if (p_sockfd)
+        {
+            SOCKET sockfd = *p_sockfd;
+            respond(sockfd);
+        }
+    }
 }
 
 int main(int argc, char *argv[])
 {
+    // init winsock
     WSADATA wsa_data;
     WSAStartup(MAKEWORD(2, 2), &wsa_data);
 
+    // setup server address info
     struct addrinfo hints, *res;
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_UNSPEC;
@@ -118,21 +186,54 @@ int main(int argc, char *argv[])
     hints.ai_flags = AI_PASSIVE;
     getaddrinfo(NULL, PORT, &hints, &res);
 
-    SOCKET server = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
-    bind(server, res->ai_addr, (int)res->ai_addrlen);
+    // create a socket
+    SOCKET sockfd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
 
+    // setup tcp socket
+    bind(sockfd, res->ai_addr, (int)res->ai_addrlen);
+
+    // done with address info
     freeaddrinfo(res);
 
-    listen(server, SOMAXCONN);
+    // start listening for requests
+    listen(sockfd, SOMAXCONN);
+
+    // create work queue
+    struct queue queue;
+    queue.head = NULL;
+    queue.tail = NULL;
+
+    // setup thread pool
+    pthread_t thread_pool[THREAD_POOL_SIZE];
+    pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+    pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
+
+    // setup shared thread variables
+    struct thread_context thread_context;
+    thread_context.queue = &queue;
+    thread_context.mutex = &mutex;
+    thread_context.cond = &cond;
+
+    // start worker threads
+    for (int i = 0; i < THREAD_POOL_SIZE; i++)
+    {
+        pthread_create(&thread_pool[i], NULL, &worker, &thread_context);
+    }
 
     for (;;)
     {
-        SOCKET client = accept(server, NULL, NULL);
-        pthread_create(NULL, NULL, &respond, &client);
+        // accept new connection
+        SOCKET newfd = accept(sockfd, NULL, NULL);
+
+        // enqueue work to respond to the request
+        pthread_mutex_lock(&mutex);
+        pthread_cond_signal(&cond);
+        enqueue(&queue, &newfd);
+        pthread_mutex_unlock(&mutex);
     }
 
-    shutdown(server, SD_BOTH);
-    closesocket(server);
+    shutdown(sockfd, SD_BOTH);
+    closesocket(sockfd);
 
     WSACleanup();
 

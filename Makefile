@@ -4,7 +4,9 @@ CPPFLAGS :=
 LDFLAGS :=
 LDLIBS := -lws2_32
 
-SRC	:= src/main.c
+SRC	:= \
+	src/main.c \
+	src/queue.c
 TARGET := bin/server
 
 .PHONY: all
