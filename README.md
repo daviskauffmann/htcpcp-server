@@ -1,4 +1,4 @@
-# Web Server
+# HTCPCP Server
 
 ## Getting Started
 
@@ -10,8 +10,8 @@
 ### Download
 
 ```sh
-git clone https://github.com/daviskauffmann/web-server.git
-cd web-server
+git clone https://github.com/daviskauffmann/htcpcp-server.git
+cd htcpcp-server
 ```
 
 ### Build
@@ -37,3 +37,5 @@ make clean
 [Beej's Guide to Network Programming](https://beej.us/guide/bgnet/)
 
 [Jacob Sorber's multithreaded webserver series](https://www.youtube.com/watch?v=Pg_4Jz8ZIH4)
+
+[HTCPCP/1.0](https://tools.ietf.org/html/rfc2324)
