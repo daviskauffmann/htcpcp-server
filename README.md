@@ -2,6 +2,11 @@
 
 ## Getting Started
 
+### Dependencies
+
+- Winsock
+- http-parser
+
 ### Download
 
 ```sh

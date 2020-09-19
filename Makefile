@@ -2,7 +2,7 @@ CC := gcc
 CFLAGS := -ggdb -std=c99 -Wall -Wextra -Wpedantic -Wno-unused-parameter
 CPPFLAGS :=
 LDFLAGS :=
-LDLIBS := -lws2_32
+LDLIBS := -lws2_32 -lhttp_parser
 
 SRC	:= \
 	src/main.c \
