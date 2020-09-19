@@ -10,6 +10,8 @@
 #define PORT "3000"
 #define THREAD_POOL_SIZE 20
 
+#define IS_TEAPOT 1
+
 struct query
 {
     char *field;
@@ -80,7 +82,7 @@ void freeheaders(struct headers *headers)
 
 struct request
 {
-    const char *method;
+    enum http_method method;
     char *path;
     struct queries queries;
     struct headers headers;
@@ -89,7 +91,7 @@ struct request
 
 struct response
 {
-    int status;
+    enum http_status status;
     struct headers headers;
     const char *body;
 };
@@ -123,14 +125,17 @@ void catstring(char **dest, const char *src)
 char *stringify(struct response *response)
 {
     // TODO: check for memory leaks
-    char *str = formatstring("HTTP/1.1 %d %s\n", response->status, http_status_str(response->status));
+    char *str = formatstring("HTTP/1.1 %d %s\n", response->status, response->status == 418 ? "I'm a teapot" : http_status_str(response->status));
     for (int i = 0; i < response->headers.count; i++)
     {
         struct header *header = &response->headers.items[i];
         catstring(&str, formatstring("%s: %s\n", header->field, header->value));
     }
     catstring(&str, "\n");
-    catstring(&str, response->body);
+    if (response->body)
+    {
+        catstring(&str, response->body);
+    }
     return str;
 }
 
@@ -156,7 +161,7 @@ int sendall(SOCKET sockfd, const char *buf, int len, int flags)
 int on_message_begin(http_parser *parser)
 {
     struct request *request = parser->data;
-    request->method = http_method_str(parser->method);
+    request->method = parser->method;
     return 0;
 }
 
@@ -169,76 +174,80 @@ int on_url(http_parser *parser, const char *at, size_t length)
     strncpy(url, at, length);
     url[length] = 0;
 
-    // split url by '?' to get the path
-    int path_length = 0;
+    int path_length = length;
     for (size_t i = 0; i < length; i++)
     {
         if (url[i] == '?')
         {
+            // path is only up to the '?' in this case
             path_length = i;
-            request->path = malloc(path_length + 1);
-            strncpy(request->path, url, path_length);
-            request->path[path_length] = 0;
         }
     }
+    request->path = malloc(path_length + 1);
+    strncpy(request->path, url, path_length);
+    request->path[path_length] = 0;
 
-    // use the length of the path to get the query
-    int query_length = length - path_length;
-    char *query = malloc(query_length + 1);
-    strncpy(query, url + path_length, query_length);
-    query[query_length] = 0;
-
-    // split query by '&' to get the params
-    int start_index = 1; // start at 1 because the first character is always '?'
-    for (int i = start_index; i < query_length; i++)
+    // is there more in the url after the path?
+    if ((int)length > path_length)
     {
-        // check if a full param has been found, either by the '&' character or the end of the query
-        if (query[i] == '&' || i == query_length - 1)
+        // use the length of the path to get the query
+        int query_length = length - path_length;
+        char *query = malloc(query_length + 1);
+        strncpy(query, url + path_length, query_length);
+        query[query_length] = 0;
+
+        // split query by '&' to get the params
+        int start_index = 1; // start at 1 because the first character is always '?'
+        for (int i = start_index; i < query_length; i++)
         {
-            // use start_index and current_index to get the param
-            int param_length = i - start_index;
-            if (i == query_length - 1)
+            // check if a full param has been found, either by the '&' character or the end of the query
+            if (query[i] == '&' || i == query_length - 1)
             {
-                // prevent the last param from being cut off
-                param_length += 1;
-            }
-            char *param = malloc(param_length + 1);
-            strncpy(param, query + start_index, param_length);
-            param[param_length] = 0;
-
-            // split param by '=' to get field/value pair
-            for (int j = 0; j < param_length; j++)
-            {
-                if (param[j] == '=')
+                // use start_index and current_index to get the param
+                int param_length = i - start_index;
+                if (i == query_length - 1)
                 {
-                    // use current index to get the field
-                    int field_length = j;
-                    char *field = malloc(field_length + 1);
-                    strncpy(field, param, field_length);
-                    field[field_length] = 0;
-
-                    // use the length of the field to get the value
-                    int value_length = param_length - field_length;
-                    char *value = malloc(value_length + 1);
-                    strncpy(value, param + field_length + 1, value_length);
-                    value[value_length] = 0;
-
-                    // add to request structure
-                    addquery(&request->queries, field, value);
-
-                    free(field);
-                    free(value);
+                    // if this is the last param, prevent the last character from being cut off
+                    param_length += 1;
                 }
+                char *param = malloc(param_length + 1);
+                strncpy(param, query + start_index, param_length);
+                param[param_length] = 0;
+
+                // split param by '=' to get field/value pair
+                for (int j = 0; j < param_length; j++)
+                {
+                    if (param[j] == '=')
+                    {
+                        // use current index to get the field
+                        int field_length = j;
+                        char *field = malloc(field_length + 1);
+                        strncpy(field, param, field_length);
+                        field[field_length] = 0;
+
+                        // use the length of the field to get the value
+                        int value_length = param_length - field_length;
+                        char *value = malloc(value_length + 1);
+                        strncpy(value, param + field_length + 1, value_length);
+                        value[value_length] = 0;
+
+                        // add to request structure
+                        addquery(&request->queries, field, value);
+
+                        free(field);
+                        free(value);
+                    }
+                }
+
+                free(param);
+
+                // set starting index to current index + 1 in order to skip the '&' character
+                start_index = i + 1;
             }
-
-            free(param);
-
-            // set starting index to current index + 1 in order to skip the '&' character
-            start_index = i + 1;
         }
-    }
 
-    free(query);
+        free(query);
+    }
 
     free(url);
 
@@ -279,6 +288,10 @@ void respond(SOCKET sockfd)
     struct request request;
     memset(&request, 0, sizeof(request));
 
+    http_parser *parser = malloc(sizeof(*parser));
+    http_parser_init(parser, HTTP_REQUEST);
+    parser->data = &request;
+
     http_parser_settings settings;
     http_parser_settings_init(&settings);
     settings.on_message_begin = &on_message_begin;
@@ -287,10 +300,7 @@ void respond(SOCKET sockfd)
     settings.on_header_value = &on_header_value;
     settings.on_body = &on_body;
 
-    http_parser *parser = malloc(sizeof(*parser));
-    http_parser_init(parser, HTTP_REQUEST);
-    parser->data = &request;
-
+    // TODO: use a loop rather than just a large buffer
     char request_raw[65536];
     int bytes_received = recv(sockfd, request_raw, sizeof(request_raw), 0);
     if (bytes_received <= 0)
@@ -309,8 +319,9 @@ void respond(SOCKET sockfd)
         return;
     }
 
-    // TODO: use request struct to determine response
-    printf("METHOD: %s\n", request.method);
+    free(parser);
+
+    printf("METHOD: %s\n", http_method_str(request.method));
     printf("PATH: %s\n", request.path);
     for (int i = 0; i < request.queries.count; i++)
     {
@@ -324,20 +335,68 @@ void respond(SOCKET sockfd)
 
     struct response response;
     memset(&response, 0, sizeof(response));
-    response.status = 200;
-    addheader(&response.headers, "Content-Type", "application/json");
-    response.body = "{\"message\":\"Hello, Client!\"}";
-    char *content_length = formatstring("%lld", strlen(response.body));
-    addheader(&response.headers, "Content-Length", content_length);
-    free(content_length);
+
+    // TODO: implement full spec
+    // https://tools.ietf.org/html/rfc2324
+    if (strcmp(request.path, "/") == 0)
+    {
+        switch (request.method)
+        {
+        // TODO: support BREW method
+        case HTTP_POST:
+        {
+            // get headers
+            // TODO: support Accept-Additions
+            const char *content_type;
+            for (int i = 0; i < request.headers.count; i++)
+            {
+                if (strcmp(request.headers.items[i].field, "Content-Type") == 0)
+                {
+                    content_type = request.headers.items[i].value;
+                }
+            }
+
+            // check Content-Type
+            // TODO: spec has some ambiguity about whether Content-Type should be application/coffee-pot-command or message/coffeepot, so support both for now?
+            if (strcmp(content_type, "application/coffee-pot-command") == 0 || strcmp(content_type, "message/coffeepot") == 0)
+            {
+                if (IS_TEAPOT)
+                {
+                    // a teapot cannot brew coffee
+                    response.status = 418;
+                    addheader(&response.headers, "Content-Type", "text/plain");
+                    response.body = "short and stout";
+                    char *content_length = formatstring("%lld", strlen(response.body));
+                    addheader(&response.headers, "Content-Length", content_length);
+                    free(content_length);
+                }
+                else
+                {
+                    // TODO: request body can be "start" or "stop", so brew accordingly
+                    response.status = HTTP_STATUS_NOT_IMPLEMENTED;
+                }
+            }
+            else
+            {
+                // TODO: what error code to use here?
+                response.status = HTTP_STATUS_NOT_ACCEPTABLE;
+            }
+        }
+        break;
+        default:
+            response.status = HTTP_STATUS_METHOD_NOT_ALLOWED;
+        }
+    }
+    else
+    {
+        response.status = HTTP_STATUS_NOT_FOUND;
+    }
 
     char *response_raw = stringify(&response);
     sendall(sockfd, response_raw, strlen(response_raw), 0);
     free(response_raw);
 
     freeheaders(&response.headers);
-
-    free(parser);
 
     free(request.path);
     freequeries(&request.queries);
