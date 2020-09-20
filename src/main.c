@@ -1,3 +1,4 @@
+#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 #include <winsock2.h>
@@ -10,7 +11,9 @@
 #define PORT "3000"
 #define THREAD_POOL_SIZE 20
 
-#define IS_TEAPOT 1
+#define IS_TEAPOT false
+
+bool is_brewing = false;
 
 struct query
 {
@@ -93,8 +96,13 @@ struct response
 {
     enum http_status status;
     struct headers headers;
-    const char *body;
+    char *body;
 };
+
+void setbody(struct response *response, const char *body)
+{
+    response->body = strdup(body);
+}
 
 char *formatstring(const char *format, ...)
 {
@@ -111,32 +119,44 @@ void catstring(char **dest, const char *src)
 {
     int dest_length = strlen(*dest);
     char *temp = malloc(dest_length + 1);
-    memcpy(temp, *dest, dest_length);
+    strncpy(temp, *dest, dest_length);
     temp[dest_length] = 0;
+
     int src_length = strlen(src);
     int new_length = dest_length + src_length;
-    *dest = malloc(new_length + 1);
-    memcpy(*dest, temp, strlen(temp));
-    memcpy(*dest + dest_length, src, src_length);
+    *dest = realloc(*dest, new_length + 1);
+    strncpy(*dest, temp, dest_length);
+    strncpy(*dest + dest_length, src, src_length);
     (*dest)[new_length] = 0;
+
     free(temp);
 }
 
 char *stringify(struct response *response)
 {
-    // TODO: check for memory leaks
-    char *str = formatstring("HTTP/1.1 %d %s\n", response->status, response->status == 418 ? "I'm a teapot" : http_status_str(response->status));
+    char *http_response = malloc(1);
+    http_response[0] = 0;
+
+    char *content_line = formatstring("HTTP/1.1 %d %s\n", response->status, response->status == 418 ? "I'm a teapot" : http_status_str(response->status));
+    catstring(&http_response, content_line);
+    free(content_line);
+
     for (int i = 0; i < response->headers.count; i++)
     {
         struct header *header = &response->headers.items[i];
-        catstring(&str, formatstring("%s: %s\n", header->field, header->value));
+        char *header_line = formatstring("%s: %s\n", header->field, header->value);
+        catstring(&http_response, header_line);
+        free(header_line);
     }
-    catstring(&str, "\n");
+
+    catstring(&http_response, "\n");
+
     if (response->body)
     {
-        catstring(&str, response->body);
+        catstring(&http_response, response->body);
     }
-    return str;
+
+    return http_response;
 }
 
 int sendall(SOCKET sockfd, const char *buf, int len, int flags)
@@ -214,7 +234,7 @@ int on_url(http_parser *parser, const char *at, size_t length)
                 strncpy(param, query + start_index, param_length);
                 param[param_length] = 0;
 
-                // split param by '=' to get field/value pair
+                // split param by '=' to get field/value pairs
                 for (int j = 0; j < param_length; j++)
                 {
                     if (param[j] == '=')
@@ -301,14 +321,14 @@ void respond(SOCKET sockfd)
     settings.on_body = &on_body;
 
     // TODO: use a loop rather than just a large buffer
-    char request_raw[65536];
-    int bytes_received = recv(sockfd, request_raw, sizeof(request_raw), 0);
+    char http_request[65536];
+    int bytes_received = recv(sockfd, http_request, sizeof(http_request), 0);
     if (bytes_received <= 0)
     {
         return;
     }
 
-    int bytes_parsed = http_parser_execute(parser, &settings, request_raw, bytes_received);
+    int bytes_parsed = http_parser_execute(parser, &settings, http_request, bytes_received);
     if (parser->upgrade)
     {
         // TODO: other protocols?
@@ -342,7 +362,19 @@ void respond(SOCKET sockfd)
     {
         switch (request.method)
         {
-        // TODO: support BREW method
+        case HTTP_GET:
+            response.status = HTTP_STATUS_OK;
+            addheader(&response.headers, "Content-Type", "message/coffeepot");
+            if (is_brewing)
+            {
+                setbody(&response, "brewing");
+            }
+            else
+            {
+                setbody(&response, "not brewing");
+            }
+            break;
+        // TODO: add custom BREW method here, since it should do the exact same as POST
         case HTTP_POST:
         {
             // get headers
@@ -357,34 +389,51 @@ void respond(SOCKET sockfd)
             }
 
             // check Content-Type
-            // TODO: spec has some ambiguity about whether Content-Type should be application/coffee-pot-command or message/coffeepot, so support both for now?
-            if (strcmp(content_type, "application/coffee-pot-command") == 0 || strcmp(content_type, "message/coffeepot") == 0)
+            // NOTE: the spec has some ambiguity about whether Content-Type should be application/coffee-pot-command or message/coffeepot
+            //       but https://www.rfc-editor.org/errata/eid682 proposes to use message/coffeepot so that is what will be accepted here
+            if (strcmp(content_type, "message/coffeepot") == 0)
             {
                 if (IS_TEAPOT)
                 {
                     // a teapot cannot brew coffee
                     response.status = 418;
                     addheader(&response.headers, "Content-Type", "text/plain");
-                    response.body = "short and stout";
+                    setbody(&response, "short and stout");
                     char *content_length = formatstring("%lld", strlen(response.body));
                     addheader(&response.headers, "Content-Length", content_length);
                     free(content_length);
                 }
                 else
                 {
-                    // TODO: request body can be "start" or "stop", so brew accordingly
-                    response.status = HTTP_STATUS_NOT_IMPLEMENTED;
+                    if (strcmp(request.body, "start") == 0)
+                    {
+                        is_brewing = true;
+                        response.status = HTTP_STATUS_OK;
+                    }
+                    else if (strcmp(request.body, "stop") == 0)
+                    {
+                        is_brewing = false;
+                        response.status = HTTP_STATUS_OK;
+                    }
+                    else
+                    {
+                        response.status = HTTP_STATUS_BAD_REQUEST;
+                    }
                 }
             }
             else
             {
-                // TODO: what error code to use here?
-                response.status = HTTP_STATUS_NOT_ACCEPTABLE;
+                response.status = HTTP_STATUS_UNSUPPORTED_MEDIA_TYPE;
             }
+            break;
         }
-        break;
+        case HTTP_PROPFIND:
+            response.status = HTTP_STATUS_NOT_IMPLEMENTED;
+            break;
+        // TODO: support custom WHEN method
         default:
             response.status = HTTP_STATUS_METHOD_NOT_ALLOWED;
+            break;
         }
     }
     else
@@ -392,11 +441,12 @@ void respond(SOCKET sockfd)
         response.status = HTTP_STATUS_NOT_FOUND;
     }
 
-    char *response_raw = stringify(&response);
-    sendall(sockfd, response_raw, strlen(response_raw), 0);
-    free(response_raw);
+    char *http_response = stringify(&response);
+    sendall(sockfd, http_response, strlen(http_response), 0);
+    free(http_response);
 
     freeheaders(&response.headers);
+    free(response.body);
 
     free(request.path);
     freequeries(&request.queries);
@@ -426,12 +476,15 @@ void *worker(void *arg)
         SOCKET *p_sockfd = dequeue(thread_context->queue);
         if (!p_sockfd)
         {
+            // did not get work, so wait for signal
             pthread_cond_wait(thread_context->cond, thread_context->mutex);
             p_sockfd = dequeue(thread_context->queue);
         }
         pthread_mutex_unlock(thread_context->mutex);
+
         if (p_sockfd)
         {
+            // do the work upon successful dequeue
             respond(*p_sockfd);
         }
     }
