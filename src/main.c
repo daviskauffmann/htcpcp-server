@@ -32,6 +32,7 @@ void addquery(struct queries *queries, const char *field, const char *value)
     struct query query;
     query.field = strdup(field);
     query.value = strdup(value);
+
     queries->items = realloc(queries->items, (queries->count + 1) * sizeof(*queries->items));
     queries->items[queries->count++] = query;
 }
@@ -66,6 +67,7 @@ void addheader(struct headers *headers, const char *field, const char *value)
     struct header header;
     header.field = strdup(field);
     header.value = strdup(value);
+
     headers->items = realloc(headers->items, (headers->count + 1) * sizeof(*headers->items));
     headers->items[headers->count++] = header;
 }
@@ -108,34 +110,43 @@ char *formatstring(const char *format, ...)
 {
     va_list argv;
     va_start(argv, format);
-    int size = vsnprintf(NULL, 0, format, argv);
-    char *stream = malloc(size + 1);
-    vsprintf(stream, format, argv);
-    stream[size] = 0;
-    return stream;
+    int length = vsnprintf(NULL, 0, format, argv);
+    char *string = malloc(length + 1);
+    vsprintf(string, format, argv);
+    string[length] = 0;
+    return string;
 }
 
 void catstring(char **dest, const char *src)
 {
-    int dest_length = strlen(*dest);
-    char *temp = malloc(dest_length + 1);
-    strncpy(temp, *dest, dest_length);
-    temp[dest_length] = 0;
+    if (*dest)
+    {
+        int dest_length = strlen(*dest);
+        char *temp = malloc(dest_length + 1);
+        strncpy(temp, *dest, dest_length);
+        temp[dest_length] = 0;
 
-    int src_length = strlen(src);
-    int new_length = dest_length + src_length;
-    *dest = realloc(*dest, new_length + 1);
-    strncpy(*dest, temp, dest_length);
-    strncpy(*dest + dest_length, src, src_length);
-    (*dest)[new_length] = 0;
+        int src_length = strlen(src);
+        int new_length = dest_length + src_length;
+        *dest = realloc(*dest, new_length + 1);
+        strncpy(*dest, temp, dest_length);
+        strncat(*dest, src, src_length);
+        (*dest)[new_length] = 0;
 
-    free(temp);
+        free(temp);
+    }
+    else
+    {
+        int length = strlen(src);
+        *dest = malloc(length + 1);
+        strncpy(*dest, src, length);
+        (*dest)[length] = 0;
+    }
 }
 
 char *stringify(struct response *response)
 {
-    char *http_response = malloc(1);
-    http_response[0] = 0;
+    char *http_response = NULL;
 
     char *content_line = formatstring("HTTP/1.1 %d %s\n", response->status, response->status == 418 ? "I'm a teapot" : http_status_str(response->status));
     catstring(&http_response, content_line);
@@ -358,13 +369,14 @@ void respond(SOCKET sockfd)
 
     // TODO: implement full spec
     // https://tools.ietf.org/html/rfc2324
-    if (strcmp(request.path, "/") == 0)
+    if (strcmp(request.path, "/brew") == 0)
     {
         switch (request.method)
         {
         case HTTP_GET:
             response.status = HTTP_STATUS_OK;
             addheader(&response.headers, "Content-Type", "message/coffeepot");
+            // TODO: return proper coffee body
             if (is_brewing)
             {
                 setbody(&response, "brewing");
@@ -427,9 +439,6 @@ void respond(SOCKET sockfd)
             }
             break;
         }
-        case HTTP_PROPFIND:
-            response.status = HTTP_STATUS_NOT_IMPLEMENTED;
-            break;
         // TODO: support custom WHEN method
         default:
             response.status = HTTP_STATUS_METHOD_NOT_ALLOWED;
