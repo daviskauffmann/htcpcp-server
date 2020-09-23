@@ -1,10 +1,10 @@
+#include <http_parser.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <pthread.h>
-#include <http_parser.h>
 
 #include "queue.h"
 
@@ -114,6 +114,7 @@ char *formatstring(const char *format, ...)
     char *string = malloc(length + 1);
     vsprintf(string, format, argv);
     string[length] = 0;
+    va_end(argv);
     return string;
 }
 
@@ -170,7 +171,7 @@ char *stringify(struct response *response)
     return http_response;
 }
 
-int sendall(SOCKET sockfd, const char *buf, int len, int flags)
+int sendall(int sockfd, const char *buf, int len, int flags)
 {
     int total_bytes_sent = 0;
     int bytes_left = len;
@@ -314,7 +315,7 @@ int on_body(http_parser *parser, const char *at, size_t length)
     return 0;
 }
 
-void respond(SOCKET sockfd)
+void respond(int sockfd)
 {
     struct request request;
     memset(&request, 0, sizeof(request));
@@ -390,7 +391,6 @@ void respond(SOCKET sockfd)
         case HTTP_POST:
         {
             // get headers
-            // TODO: support Accept-Additions
             const char *content_type;
             for (int i = 0; i < request.headers.count; i++)
             {
@@ -482,7 +482,7 @@ void *worker(void *arg)
     {
         // check for work on the queue
         pthread_mutex_lock(thread_context->mutex);
-        SOCKET *p_sockfd = dequeue(thread_context->queue);
+        int *p_sockfd = dequeue(thread_context->queue);
         if (!p_sockfd)
         {
             // did not get work, so wait for signal
@@ -501,6 +501,23 @@ void *worker(void *arg)
 
 int main(int argc, char *argv[])
 {
+    // parse command line options
+    const char *port = PORT;
+
+    for (int i = 1; i < argc; i++)
+    {
+        if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0)
+        {
+            printf("Options:\n");
+            printf("  -h, --help\tPrint this message\n");
+            printf("  -p, --port\tSet server port (default 3000)\n");
+        }
+        if (strcmp(argv[i], "-p") == 0 || strcmp(argv[i], "--port") == 0)
+        {
+            port = argv[i + 1];
+        }
+    }
+
     // init winsock
     WSADATA wsa_data;
     WSAStartup(MAKEWORD(2, 2), &wsa_data);
@@ -511,10 +528,10 @@ int main(int argc, char *argv[])
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_flags = AI_PASSIVE;
-    getaddrinfo(NULL, PORT, &hints, &res);
+    getaddrinfo(NULL, port, &hints, &res);
 
     // create a socket
-    SOCKET sockfd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+    int sockfd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
 
     // setup tcp socket
     bind(sockfd, res->ai_addr, (int)res->ai_addrlen);
@@ -527,8 +544,7 @@ int main(int argc, char *argv[])
 
     // create work queue
     struct queue queue;
-    queue.head = NULL;
-    queue.tail = NULL;
+    memset(&queue, 0, sizeof(queue));
 
     // setup thread pool
     pthread_t thread_pool[THREAD_POOL_SIZE];
@@ -550,7 +566,7 @@ int main(int argc, char *argv[])
     for (;;)
     {
         // accept new connection
-        SOCKET newfd = accept(sockfd, NULL, NULL);
+        int newfd = accept(sockfd, NULL, NULL);
 
         // enqueue work to respond to the request
         pthread_mutex_lock(&mutex);
