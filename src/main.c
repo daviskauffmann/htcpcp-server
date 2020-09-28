@@ -33,7 +33,7 @@ void addquery(struct queries *queries, const char *field, const char *value)
     query.field = strdup(field);
     query.value = strdup(value);
 
-    queries->items = realloc(queries->items, (queries->count + 1) * sizeof(*queries->items));
+    queries->items = realloc(queries->items, (sizeof *queries->items) * (queries->count + 1));
     queries->items[queries->count++] = query;
 }
 
@@ -68,7 +68,7 @@ void addheader(struct headers *headers, const char *field, const char *value)
     header.field = strdup(field);
     header.value = strdup(value);
 
-    headers->items = realloc(headers->items, (headers->count + 1) * sizeof(*headers->items));
+    headers->items = realloc(headers->items, (sizeof *headers->items) * (headers->count + 1));
     headers->items[headers->count++] = header;
 }
 
@@ -318,9 +318,9 @@ int on_body(http_parser *parser, const char *at, size_t length)
 void respond(int sockfd)
 {
     struct request request;
-    memset(&request, 0, sizeof(request));
+    memset(&request, 0, sizeof request);
 
-    http_parser *parser = malloc(sizeof(*parser));
+    http_parser *parser = malloc(sizeof *parser);
     http_parser_init(parser, HTTP_REQUEST);
     parser->data = &request;
 
@@ -334,7 +334,7 @@ void respond(int sockfd)
 
     // TODO: use a loop rather than just a large buffer
     char http_request[65536];
-    int bytes_received = recv(sockfd, http_request, sizeof(http_request), 0);
+    int bytes_received = recv(sockfd, http_request, sizeof http_request, 0);
     if (bytes_received <= 0)
     {
         return;
@@ -366,7 +366,7 @@ void respond(int sockfd)
     printf("BODY: %s\n", request.body);
 
     struct response response;
-    memset(&response, 0, sizeof(response));
+    memset(&response, 0, sizeof response);
 
     // TODO: implement full spec
     // https://tools.ietf.org/html/rfc2324
@@ -524,7 +524,7 @@ int main(int argc, char *argv[])
 
     // setup server address info
     struct addrinfo hints, *res;
-    memset(&hints, 0, sizeof(hints));
+    memset(&hints, 0, sizeof hints);
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_flags = AI_PASSIVE;
@@ -544,7 +544,7 @@ int main(int argc, char *argv[])
 
     // create work queue
     struct queue queue;
-    memset(&queue, 0, sizeof(queue));
+    memset(&queue, 0, sizeof queue);
 
     // setup thread pool
     pthread_t thread_pool[THREAD_POOL_SIZE];

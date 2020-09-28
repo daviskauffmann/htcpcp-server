@@ -5,7 +5,7 @@
 
 void enqueue(struct queue *queue, void *data)
 {
-    struct node *node = malloc(sizeof(*node));
+    struct node *node = malloc(sizeof *node);
     node->data = data;
     node->next = NULL;
     if (queue->tail)
