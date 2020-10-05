@@ -32,7 +32,7 @@ make run
 make clean
 ```
 
-## Resources used
+## Resources Used
 
 [Beej's Guide to Network Programming](https://beej.us/guide/bgnet/)
 
