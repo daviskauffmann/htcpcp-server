@@ -149,19 +149,19 @@ char *stringify(struct response *response)
 {
     char *http_response = NULL;
 
-    char *content_line = formatstring("HTTP/1.1 %d %s\n", response->status, response->status == 418 ? "I'm a teapot" : http_status_str(response->status));
+    char *content_line = formatstring("HTTP/1.1 %d %s\r\n", response->status, response->status == 418 ? "I'm a teapot" : http_status_str(response->status));
     catstring(&http_response, content_line);
     free(content_line);
 
     for (int i = 0; i < response->headers.count; i++)
     {
         struct header *header = &response->headers.items[i];
-        char *header_line = formatstring("%s: %s\n", header->field, header->value);
+        char *header_line = formatstring("%s: %s\r\n", header->field, header->value);
         catstring(&http_response, header_line);
         free(header_line);
     }
 
-    catstring(&http_response, "\n");
+    catstring(&http_response, "\r\n");
 
     if (response->body)
     {
