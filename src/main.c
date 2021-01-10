@@ -15,41 +15,6 @@
 
 bool is_brewing = false;
 
-struct query
-{
-    char *field;
-    char *value;
-};
-
-struct queries
-{
-    int count;
-    struct query *items;
-};
-
-void addquery(struct queries *queries, const char *field, const char *value)
-{
-    struct query query;
-    query.field = strdup(field);
-    query.value = strdup(value);
-
-    queries->items = realloc(queries->items, (queries->count + 1) * sizeof(*queries->items));
-    queries->items[queries->count++] = query;
-}
-
-void freequeries(struct queries *queries)
-{
-    for (int i = 0; i < queries->count; i++)
-    {
-        free(queries->items[i].field);
-        free(queries->items[i].value);
-    }
-    if (queries->items)
-    {
-        free(queries->items);
-    }
-}
-
 struct header
 {
     char *field;
@@ -85,12 +50,47 @@ void freeheaders(struct headers *headers)
     }
 }
 
+struct query
+{
+    char *field;
+    char *value;
+};
+
+struct queries
+{
+    int count;
+    struct query *items;
+};
+
+void addquery(struct queries *queries, const char *field, const char *value)
+{
+    struct query query;
+    query.field = strdup(field);
+    query.value = strdup(value);
+
+    queries->items = realloc(queries->items, (queries->count + 1) * sizeof(*queries->items));
+    queries->items[queries->count++] = query;
+}
+
+void freequeries(struct queries *queries)
+{
+    for (int i = 0; i < queries->count; i++)
+    {
+        free(queries->items[i].field);
+        free(queries->items[i].value);
+    }
+    if (queries->items)
+    {
+        free(queries->items);
+    }
+}
+
 struct request
 {
     enum http_method method;
     char *path;
-    struct queries queries;
     struct headers headers;
+    struct queries queries;
     char *body;
 };
 
