@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
@@ -13,7 +14,15 @@
 
 #define IS_TEAPOT false
 
-bool is_brewing = false;
+#define SECONDS_TO_BREW_COFFEE 30
+
+struct coffee
+{
+    bool brewing;
+    time_t brew_start_time;
+};
+
+struct coffee coffee;
 
 struct header
 {
@@ -235,7 +244,7 @@ int on_url(http_parser *parser, const char *at, size_t length)
             // check if a full param has been found, either by the '&' character or the end of the query
             if (query[i] == '&' || i == query_length - 1)
             {
-                // use start_index and current_index to get the param
+                // use start_index and current index (i) to get the param
                 int param_length = i - start_index;
                 if (i == query_length - 1)
                 {
@@ -251,7 +260,7 @@ int on_url(http_parser *parser, const char *at, size_t length)
                 {
                     if (param[j] == '=')
                     {
-                        // use current index to get the field
+                        // use current index (j) to get the field
                         int field_length = j;
                         char *field = malloc(field_length + 1);
                         strncpy(field, param, field_length);
@@ -370,30 +379,47 @@ void respond(int sockfd)
 
     // TODO: implement full spec
     // https://tools.ietf.org/html/rfc2324
-    if (strcmp(request.path, "/brew") == 0)
+    if (strcmp(request.path, "/") == 0)
     {
         switch (request.method)
         {
         case HTTP_GET:
-            response.status = HTTP_STATUS_OK;
             addheader(&response.headers, "Content-Type", "message/coffeepot");
-            // TODO: return proper coffee body
-            if (is_brewing)
+            if (coffee.brewing)
             {
-                setbody(&response, "brewing");
+                time_t current_time = time(NULL);
+                if (current_time > coffee.brew_start_time + SECONDS_TO_BREW_COFFEE)
+                {
+                    coffee.brewing = false;
+
+                    response.status = HTTP_STATUS_OK;
+                    // TODO: return coffee information
+                    setbody(&response, "coffee is done!");
+                }
+                else
+                {
+                    response.status = HTTP_STATUS_ACCEPTED;
+                    setbody(&response, "coffee is brewing");
+                }
             }
             else
             {
-                setbody(&response, "not brewing");
+                response.status = HTTP_STATUS_OK;
+                setbody(&response, "no coffee");
             }
             break;
         // TODO: add custom BREW method here, since it should do the exact same as POST
         case HTTP_POST:
         {
             // get headers
+            const char *accept_additions;
             const char *content_type;
             for (int i = 0; i < request.headers.count; i++)
             {
+                if (strcmp(request.headers.items[i].field, "Accept-Additions") == 0)
+                {
+                    accept_additions = request.headers.items[i].value;
+                }
                 if (strcmp(request.headers.items[i].field, "Content-Type") == 0)
                 {
                     content_type = request.headers.items[i].value;
@@ -419,12 +445,66 @@ void respond(int sockfd)
                 {
                     if (strcmp(request.body, "start") == 0)
                     {
-                        is_brewing = true;
+                        coffee.brewing = true;
+                        coffee.brew_start_time = time(NULL);
+
+                        // get length of header
+                        int accept_additions_length = strlen(accept_additions);
+
+                        // split header by ',' to get clauses
+                        int start_index = 0;
+                        for (int i = start_index; i < accept_additions_length; i++)
+                        {
+                            // check if a full clause has been found, either by the ',' character or the end of the header
+                            if (accept_additions[i] == ',' || i == accept_additions_length - 1)
+                            {
+                                // use start_index and current index (i) to get the clause
+                                int clause_length = i - start_index;
+                                if (i == accept_additions_length - 1)
+                                {
+                                    // if this is the last clause, prevent the last character from being cut off
+                                    clause_length += 1;
+                                }
+                                char *clause = malloc(clause_length + 1);
+                                strncpy(clause, accept_additions + start_index, clause_length);
+                                clause[clause_length] = 0;
+
+                                // split clause by ';' to get addition_type/parameter pairs
+                                for (int j = 0; j < clause_length; j++)
+                                {
+                                    if (clause[j] == ';')
+                                    {
+                                        // use current index (j) to get the addition_type
+                                        int addition_type_length = j;
+                                        char *addition_type = malloc(addition_type_length + 1);
+                                        strncpy(addition_type, clause, addition_type_length);
+                                        addition_type[addition_type_length] = 0;
+
+                                        // use length of the addition_type to get the parameter
+                                        int parameter_length = clause_length - addition_type_length;
+                                        char *parameter = malloc(parameter_length + 1);
+                                        strncpy(parameter, clause + addition_type_length + 1, parameter_length);
+                                        parameter[parameter_length] = 0;
+
+                                        // TODO: add supported additions to the coffee
+                                        printf("%s = %s\n", addition_type, parameter);
+
+                                        free(addition_type);
+                                        free(parameter);
+                                    }
+                                }
+
+                                free(clause);
+
+                                start_index = i + 1;
+                            }
+                        }
+
                         response.status = HTTP_STATUS_OK;
                     }
                     else if (strcmp(request.body, "stop") == 0)
                     {
-                        is_brewing = false;
+                        coffee.brewing = false;
                         response.status = HTTP_STATUS_OK;
                     }
                     else
@@ -562,6 +642,9 @@ int main(int argc, char *argv[])
     {
         pthread_create(&thread_pool[i], NULL, &worker, &thread_context);
     }
+
+    coffee.brewing = false;
+    coffee.brew_start_time = 0;
 
     for (;;)
     {
