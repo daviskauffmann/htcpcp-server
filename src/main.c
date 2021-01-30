@@ -7,6 +7,7 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
+#include "kvp_list.h"
 #include "queue.h"
 
 #define PORT "3000"
@@ -24,89 +25,19 @@ struct coffee
 
 struct coffee coffee;
 
-struct header
-{
-    char *field;
-    char *value;
-};
-
-struct headers
-{
-    int count;
-    struct header *items;
-};
-
-void addheader(struct headers *headers, const char *field, const char *value)
-{
-    struct header header;
-    header.field = strdup(field);
-    header.value = strdup(value);
-
-    headers->items = realloc(headers->items, (headers->count + 1) * sizeof(*headers->items));
-    headers->items[headers->count++] = header;
-}
-
-void freeheaders(struct headers *headers)
-{
-    for (int i = 0; i < headers->count; i++)
-    {
-        free(headers->items[i].field);
-        free(headers->items[i].value);
-    }
-    if (headers->items)
-    {
-        free(headers->items);
-    }
-}
-
-struct query
-{
-    char *field;
-    char *value;
-};
-
-struct queries
-{
-    int count;
-    struct query *items;
-};
-
-void addquery(struct queries *queries, const char *field, const char *value)
-{
-    struct query query;
-    query.field = strdup(field);
-    query.value = strdup(value);
-
-    queries->items = realloc(queries->items, (queries->count + 1) * sizeof(*queries->items));
-    queries->items[queries->count++] = query;
-}
-
-void freequeries(struct queries *queries)
-{
-    for (int i = 0; i < queries->count; i++)
-    {
-        free(queries->items[i].field);
-        free(queries->items[i].value);
-    }
-    if (queries->items)
-    {
-        free(queries->items);
-    }
-}
-
 struct request
 {
     enum http_method method;
     char *path;
-    struct headers headers;
-    struct queries queries;
+    struct kvp_list headers;
+    struct kvp_list queries;
     char *body;
 };
 
 struct response
 {
     enum http_status status;
-    struct headers headers;
+    struct kvp_list headers;
     char *body;
 };
 
@@ -164,8 +95,8 @@ char *stringify(struct response *response)
 
     for (int i = 0; i < response->headers.count; i++)
     {
-        struct header *header = &response->headers.items[i];
-        char *header_line = formatstring("%s: %s\r\n", header->field, header->value);
+        struct kvp *header = &response->headers.items[i];
+        char *header_line = formatstring("%s: %s\r\n", header->key, header->value);
         catstring(&http_response, header_line);
         free(header_line);
     }
@@ -273,7 +204,7 @@ int on_url(http_parser *parser, const char *at, size_t length)
                         value[value_length] = 0;
 
                         // add to request structure
-                        addquery(&request->queries, field, value);
+                        add_kvp(&request->queries, field, value);
 
                         free(field);
                         free(value);
@@ -301,7 +232,8 @@ int on_header_field(http_parser *parser, const char *at, size_t length)
     char *field = malloc(length + 1);
     strncpy(field, at, length);
     field[length] = 0;
-    addheader(&request->headers, field, NULL);
+    add_kvp(&request->headers, field, NULL);
+    free(field);
     return 0;
 }
 
@@ -353,10 +285,14 @@ void respond(int sockfd)
     if (parser->upgrade)
     {
         // TODO: other protocols?
+        printf("UPGRADE\n");
+        free(parser);
         return;
     }
     else if (bytes_parsed != bytes_received)
     {
+        printf("ERROR :%s: %s\n", http_errno_name(parser->http_errno), http_errno_description(parser->http_errno));
+        free(parser);
         return;
     }
 
@@ -366,11 +302,11 @@ void respond(int sockfd)
     printf("PATH: %s\n", request.path);
     for (int i = 0; i < request.queries.count; i++)
     {
-        printf("QUERY: %s = %s\n", request.queries.items[i].field, request.queries.items[i].value);
+        printf("QUERY: %s = %s\n", request.queries.items[i].key, request.queries.items[i].value);
     }
     for (int i = 0; i < request.headers.count; i++)
     {
-        printf("HEADER: %s: %s\n", request.headers.items[i].field, request.headers.items[i].value);
+        printf("HEADER: %s: %s\n", request.headers.items[i].key, request.headers.items[i].value);
     }
     printf("BODY: %s\n", request.body);
 
@@ -384,7 +320,7 @@ void respond(int sockfd)
         switch (request.method)
         {
         case HTTP_GET:
-            addheader(&response.headers, "Content-Type", "message/coffeepot");
+            add_kvp(&response.headers, "Content-Type", "message/coffeepot");
             if (coffee.brewing)
             {
                 time_t current_time = time(NULL);
@@ -409,6 +345,7 @@ void respond(int sockfd)
             }
             break;
         // TODO: add custom BREW method here, since it should do the exact same as POST
+        // possibly deferred because http_parser does not support non-standard methods
         case HTTP_POST:
         {
             // get headers
@@ -416,11 +353,11 @@ void respond(int sockfd)
             const char *content_type;
             for (int i = 0; i < request.headers.count; i++)
             {
-                if (strcmp(request.headers.items[i].field, "Accept-Additions") == 0)
+                if (strcmp(request.headers.items[i].key, "Accept-Additions") == 0)
                 {
                     accept_additions = request.headers.items[i].value;
                 }
-                if (strcmp(request.headers.items[i].field, "Content-Type") == 0)
+                if (strcmp(request.headers.items[i].key, "Content-Type") == 0)
                 {
                     content_type = request.headers.items[i].value;
                 }
@@ -435,10 +372,10 @@ void respond(int sockfd)
                 {
                     // a teapot cannot brew coffee
                     response.status = 418;
-                    addheader(&response.headers, "Content-Type", "text/plain");
+                    add_kvp(&response.headers, "Content-Type", "text/plain");
                     setbody(&response, "short and stout");
                     char *content_length = formatstring("%lld", strlen(response.body));
-                    addheader(&response.headers, "Content-Length", content_length);
+                    add_kvp(&response.headers, "Content-Length", content_length);
                     free(content_length);
                 }
                 else
@@ -534,12 +471,12 @@ void respond(int sockfd)
     sendall(sockfd, http_response, strlen(http_response), 0);
     free(http_response);
 
-    freeheaders(&response.headers);
+    free_kvp_list(&response.headers);
     free(response.body);
 
     free(request.path);
-    freequeries(&request.queries);
-    freeheaders(&request.headers);
+    free_kvp_list(&request.queries);
+    free_kvp_list(&request.headers);
     free(request.body);
 
     // TODO: use Connection: Keep-Alive here? not quite sure how that's supposed to work

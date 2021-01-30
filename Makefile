@@ -5,6 +5,7 @@ LDFLAGS :=
 LDLIBS := -lws2_32 -lhttp_parser
 
 SRC	:= \
+	src/kvp_list.c \
 	src/main.c \
 	src/queue.c
 TARGET := bin/server
