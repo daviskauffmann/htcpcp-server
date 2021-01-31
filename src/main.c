@@ -19,7 +19,6 @@
 
 struct coffee
 {
-    bool brewing;
     time_t brew_start_time;
 };
 
@@ -261,9 +260,9 @@ void respond(int sockfd)
     struct request request;
     memset(&request, 0, sizeof(request));
 
-    http_parser *parser = malloc(sizeof(*parser));
-    http_parser_init(parser, HTTP_REQUEST);
-    parser->data = &request;
+    http_parser parser;
+    http_parser_init(&parser, HTTP_REQUEST);
+    parser.data = &request;
 
     http_parser_settings settings;
     http_parser_settings_init(&settings);
@@ -281,22 +280,18 @@ void respond(int sockfd)
         return;
     }
 
-    int bytes_parsed = http_parser_execute(parser, &settings, http_request, bytes_received);
-    if (parser->upgrade)
+    int bytes_parsed = http_parser_execute(&parser, &settings, http_request, bytes_received);
+    if (parser.upgrade)
     {
         // TODO: other protocols?
         printf("UPGRADE\n");
-        free(parser);
         return;
     }
     else if (bytes_parsed != bytes_received)
     {
-        printf("ERROR :%s: %s\n", http_errno_name(parser->http_errno), http_errno_description(parser->http_errno));
-        free(parser);
+        printf("ERROR :%s: %s\n", http_errno_name(parser.http_errno), http_errno_description(parser.http_errno));
         return;
     }
-
-    free(parser);
 
     printf("METHOD: %s\n", http_method_str(request.method));
     printf("PATH: %s\n", request.path);
@@ -321,12 +316,17 @@ void respond(int sockfd)
         {
         case HTTP_GET:
             add_kvp(&response.headers, "Content-Type", "message/coffeepot");
-            if (coffee.brewing)
+            if (coffee.brew_start_time == 0)
+            {
+                response.status = HTTP_STATUS_OK;
+                setbody(&response, "no coffee");
+            }
+            else
             {
                 time_t current_time = time(NULL);
                 if (current_time > coffee.brew_start_time + SECONDS_TO_BREW_COFFEE)
                 {
-                    coffee.brewing = false;
+                    coffee.brew_start_time = 0;
 
                     response.status = HTTP_STATUS_OK;
                     // TODO: return coffee information
@@ -337,11 +337,6 @@ void respond(int sockfd)
                     response.status = HTTP_STATUS_ACCEPTED;
                     setbody(&response, "coffee is brewing");
                 }
-            }
-            else
-            {
-                response.status = HTTP_STATUS_OK;
-                setbody(&response, "no coffee");
             }
             break;
         // TODO: add custom BREW method here, since it should do the exact same as POST
@@ -382,7 +377,6 @@ void respond(int sockfd)
                 {
                     if (strcmp(request.body, "start") == 0)
                     {
-                        coffee.brewing = true;
                         coffee.brew_start_time = time(NULL);
 
                         // get length of header
@@ -441,7 +435,7 @@ void respond(int sockfd)
                     }
                     else if (strcmp(request.body, "stop") == 0)
                     {
-                        coffee.brewing = false;
+                        coffee.brew_start_time = 0;
                         response.status = HTTP_STATUS_OK;
                     }
                     else
@@ -580,7 +574,6 @@ int main(int argc, char *argv[])
         pthread_create(&thread_pool[i], NULL, &worker, &thread_context);
     }
 
-    coffee.brewing = false;
     coffee.brew_start_time = 0;
 
     for (;;)
