@@ -3,7 +3,7 @@
 #include <malloc.h>
 #include <string.h>
 
-void add_kvp(struct kvp_list *kvp_list, const char *key, const char *value)
+void kvp_list_add(struct kvp_list *kvp_list, const char *key, const char *value)
 {
     struct kvp kvp;
     kvp.key = strdup(key);
@@ -13,7 +13,7 @@ void add_kvp(struct kvp_list *kvp_list, const char *key, const char *value)
     kvp_list->items[kvp_list->count++] = kvp;
 }
 
-void remove_kvp(struct kvp_list *kvp_list, const char *key)
+void kvp_list_remove(struct kvp_list *kvp_list, const char *key)
 {
     for (int i = 0; i < kvp_list->count; i++)
     {
@@ -28,7 +28,7 @@ void remove_kvp(struct kvp_list *kvp_list, const char *key)
     }
 }
 
-void free_kvp_list(struct kvp_list *kvp_list)
+void kvp_list_free(struct kvp_list *kvp_list)
 {
     for (int i = 0; i < kvp_list->count; i++)
     {

@@ -7,7 +7,10 @@ LDLIBS := -lws2_32 -lhttp_parser
 SRC	:= \
 	src/kvp_list.c \
 	src/main.c \
-	src/queue.c
+	src/queue.c \
+	src/request.c \
+	src/response.c \
+	src/string_utils.c
 TARGET := bin/server
 
 .PHONY: all

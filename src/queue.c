@@ -3,7 +3,7 @@
 #include <malloc.h>
 #include <stddef.h>
 
-void enqueue(struct queue *queue, void *data)
+void queue_enqueue(struct queue *queue, void *data)
 {
     struct node *node = malloc(sizeof(*node));
     node->data = data;
@@ -19,7 +19,7 @@ void enqueue(struct queue *queue, void *data)
     queue->tail = node;
 }
 
-void *dequeue(struct queue *queue)
+void *queue_dequeue(struct queue *queue)
 {
     if (queue->head)
     {

@@ -13,8 +13,8 @@ struct kvp_list
     struct kvp *items;
 };
 
-void add_kvp(struct kvp_list *kvp_list, const char *key, const char *value);
-void remove_kvp(struct kvp_list *kvp_list, const char *key);
-void free_kvp_list(struct kvp_list *kvp_list);
+void kvp_list_add(struct kvp_list *kvp_list, const char *key, const char *value);
+void kvp_list_remove(struct kvp_list *kvp_list, const char *key);
+void kvp_list_free(struct kvp_list *kvp_list);
 
 #endif

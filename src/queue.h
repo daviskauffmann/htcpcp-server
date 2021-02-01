@@ -13,7 +13,7 @@ struct queue
     struct node *tail;
 };
 
-void enqueue(struct queue *queue, void *data);
-void *dequeue(struct queue *queue);
+void queue_enqueue(struct queue *queue, void *data);
+void *queue_dequeue(struct queue *queue);
 
 #endif

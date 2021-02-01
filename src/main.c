@@ -9,6 +9,9 @@
 
 #include "kvp_list.h"
 #include "queue.h"
+#include "request.h"
+#include "response.h"
+#include "string_utils.h"
 
 #define PORT "3000"
 #define THREAD_POOL_SIZE 20
@@ -23,111 +26,6 @@ struct coffee
 };
 
 struct coffee coffee;
-
-struct request
-{
-    enum http_method method;
-    char *path;
-    struct kvp_list headers;
-    struct kvp_list queries;
-    char *body;
-};
-
-struct response
-{
-    enum http_status status;
-    struct kvp_list headers;
-    char *body;
-};
-
-void setbody(struct response *response, const char *body)
-{
-    response->body = strdup(body);
-}
-
-char *formatstring(const char *format, ...)
-{
-    va_list argv;
-    va_start(argv, format);
-    int length = vsnprintf(NULL, 0, format, argv);
-    char *string = malloc(length + 1);
-    vsprintf(string, format, argv);
-    string[length] = 0;
-    va_end(argv);
-    return string;
-}
-
-void catstring(char **dest, const char *src)
-{
-    if (*dest)
-    {
-        int dest_length = strlen(*dest);
-        char *temp = malloc(dest_length + 1);
-        strncpy(temp, *dest, dest_length);
-        temp[dest_length] = 0;
-
-        int src_length = strlen(src);
-        int new_length = dest_length + src_length;
-        *dest = realloc(*dest, new_length + 1);
-        strncpy(*dest, temp, dest_length);
-        strncat(*dest, src, src_length);
-        (*dest)[new_length] = 0;
-
-        free(temp);
-    }
-    else
-    {
-        int length = strlen(src);
-        *dest = malloc(length + 1);
-        strncpy(*dest, src, length);
-        (*dest)[length] = 0;
-    }
-}
-
-char *stringify(struct response *response)
-{
-    char *http_response = NULL;
-
-    char *content_line = formatstring("HTTP/1.1 %d %s\r\n", response->status, response->status == 418 ? "I'm a teapot" : http_status_str(response->status));
-    catstring(&http_response, content_line);
-    free(content_line);
-
-    for (int i = 0; i < response->headers.count; i++)
-    {
-        struct kvp *header = &response->headers.items[i];
-        char *header_line = formatstring("%s: %s\r\n", header->key, header->value);
-        catstring(&http_response, header_line);
-        free(header_line);
-    }
-
-    catstring(&http_response, "\r\n");
-
-    if (response->body)
-    {
-        catstring(&http_response, response->body);
-    }
-
-    return http_response;
-}
-
-int sendall(int sockfd, const char *buf, int len, int flags)
-{
-    int total_bytes_sent = 0;
-    int bytes_left = len;
-
-    while (total_bytes_sent < len)
-    {
-        int bytes_sent = send(sockfd, buf + total_bytes_sent, bytes_left, flags);
-        if (bytes_sent <= 0)
-        {
-            return total_bytes_sent;
-        }
-        total_bytes_sent += bytes_sent;
-        bytes_left -= bytes_sent;
-    }
-
-    return total_bytes_sent;
-}
 
 int on_message_begin(http_parser *parser)
 {
@@ -203,7 +101,7 @@ int on_url(http_parser *parser, const char *at, size_t length)
                         value[value_length] = 0;
 
                         // add to request structure
-                        add_kvp(&request->queries, field, value);
+                        kvp_list_add(&request->queries, field, value);
 
                         free(field);
                         free(value);
@@ -231,7 +129,7 @@ int on_header_field(http_parser *parser, const char *at, size_t length)
     char *field = malloc(length + 1);
     strncpy(field, at, length);
     field[length] = 0;
-    add_kvp(&request->headers, field, NULL);
+    kvp_list_add(&request->headers, field, NULL);
     free(field);
     return 0;
 }
@@ -315,11 +213,11 @@ void respond(int sockfd)
         switch (request.method)
         {
         case HTTP_GET:
-            add_kvp(&response.headers, "Content-Type", "message/coffeepot");
+            kvp_list_add(&response.headers, "Content-Type", "message/coffeepot");
             if (coffee.brew_start_time == 0)
             {
                 response.status = HTTP_STATUS_OK;
-                setbody(&response, "no coffee");
+                response_set_body(&response, "no coffee");
             }
             else
             {
@@ -330,12 +228,12 @@ void respond(int sockfd)
 
                     response.status = HTTP_STATUS_OK;
                     // TODO: return coffee information
-                    setbody(&response, "coffee is done!");
+                    response_set_body(&response, "coffee is done!");
                 }
                 else
                 {
                     response.status = HTTP_STATUS_ACCEPTED;
-                    setbody(&response, "coffee is brewing");
+                    response_set_body(&response, "coffee is brewing");
                 }
             }
             break;
@@ -367,10 +265,10 @@ void respond(int sockfd)
                 {
                     // a teapot cannot brew coffee
                     response.status = 418;
-                    add_kvp(&response.headers, "Content-Type", "text/plain");
-                    setbody(&response, "short and stout");
-                    char *content_length = formatstring("%lld", strlen(response.body));
-                    add_kvp(&response.headers, "Content-Length", content_length);
+                    kvp_list_add(&response.headers, "Content-Type", "text/plain");
+                    response_set_body(&response, "short and stout");
+                    char *content_length = string_format("%lld", strlen(response.body));
+                    kvp_list_add(&response.headers, "Content-Length", content_length);
                     free(content_length);
                 }
                 else
@@ -461,17 +359,25 @@ void respond(int sockfd)
         response.status = HTTP_STATUS_NOT_FOUND;
     }
 
-    char *http_response = stringify(&response);
-    sendall(sockfd, http_response, strlen(http_response), 0);
+    char *http_response = response_stringify(&response);
+    int http_response_length = strlen(http_response);
+    int total_bytes_sent = 0;
+    int bytes_left = http_response_length;
+    while (total_bytes_sent < http_response_length)
+    {
+        int bytes_sent = send(sockfd, http_response + total_bytes_sent, bytes_left, 0);
+        if (bytes_sent <= 0)
+        {
+            break;
+        }
+        total_bytes_sent += bytes_sent;
+        bytes_left -= bytes_sent;
+    }
     free(http_response);
 
-    free_kvp_list(&response.headers);
-    free(response.body);
+    response_free(&response);
 
-    free(request.path);
-    free_kvp_list(&request.queries);
-    free_kvp_list(&request.headers);
-    free(request.body);
+    request_free(&request);
 
     // TODO: use Connection: Keep-Alive here? not quite sure how that's supposed to work
     shutdown(sockfd, SD_BOTH);
@@ -493,12 +399,12 @@ void *worker(void *arg)
     {
         // check for work on the queue
         pthread_mutex_lock(thread_context->mutex);
-        int *p_sockfd = dequeue(thread_context->queue);
+        int *p_sockfd = queue_dequeue(thread_context->queue);
         if (!p_sockfd)
         {
             // did not get work, so wait for signal
             pthread_cond_wait(thread_context->cond, thread_context->mutex);
-            p_sockfd = dequeue(thread_context->queue);
+            p_sockfd = queue_dequeue(thread_context->queue);
         }
         pthread_mutex_unlock(thread_context->mutex);
 
@@ -584,7 +490,7 @@ int main(int argc, char *argv[])
         // enqueue work to respond to the request
         pthread_mutex_lock(&mutex);
         pthread_cond_signal(&cond);
-        enqueue(&queue, &newfd);
+        queue_enqueue(&queue, &newfd);
         pthread_mutex_unlock(&mutex);
     }
 
