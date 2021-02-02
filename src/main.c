@@ -17,7 +17,6 @@
 #define THREAD_POOL_SIZE 20
 
 #define IS_TEAPOT false
-
 #define SECONDS_TO_BREW_COFFEE 30
 
 struct coffee
@@ -25,7 +24,13 @@ struct coffee
     time_t brew_start_time;
 };
 
-struct coffee coffee;
+struct thread_context
+{
+    pthread_mutex_t *mutex;
+    pthread_cond_t *cond;
+    struct queue *queue;
+    struct coffee *coffee;
+};
 
 int on_message_begin(http_parser *parser)
 {
@@ -153,265 +158,262 @@ int on_body(http_parser *parser, const char *at, size_t length)
     return 0;
 }
 
-void respond(int sockfd)
-{
-    struct request request;
-    memset(&request, 0, sizeof(request));
-
-    http_parser parser;
-    http_parser_init(&parser, HTTP_REQUEST);
-    parser.data = &request;
-
-    http_parser_settings settings;
-    http_parser_settings_init(&settings);
-    settings.on_message_begin = &on_message_begin;
-    settings.on_url = &on_url;
-    settings.on_header_field = &on_header_field;
-    settings.on_header_value = &on_header_value;
-    settings.on_body = &on_body;
-
-    // TODO: use a loop rather than just a large buffer
-    char http_request[65536];
-    int bytes_received = recv(sockfd, http_request, sizeof(http_request), 0);
-    if (bytes_received <= 0)
-    {
-        return;
-    }
-
-    int bytes_parsed = http_parser_execute(&parser, &settings, http_request, bytes_received);
-    if (parser.upgrade)
-    {
-        // TODO: other protocols?
-        printf("UPGRADE\n");
-        return;
-    }
-    else if (bytes_parsed != bytes_received)
-    {
-        printf("ERROR :%s: %s\n", http_errno_name(parser.http_errno), http_errno_description(parser.http_errno));
-        return;
-    }
-
-    printf("METHOD: %s\n", http_method_str(request.method));
-    printf("PATH: %s\n", request.path);
-    for (int i = 0; i < request.queries.count; i++)
-    {
-        printf("QUERY: %s = %s\n", request.queries.items[i].key, request.queries.items[i].value);
-    }
-    for (int i = 0; i < request.headers.count; i++)
-    {
-        printf("HEADER: %s: %s\n", request.headers.items[i].key, request.headers.items[i].value);
-    }
-    printf("BODY: %s\n", request.body);
-
-    struct response response;
-    memset(&response, 0, sizeof(response));
-
-    // TODO: implement full spec
-    // https://tools.ietf.org/html/rfc2324
-    if (strcmp(request.path, "/") == 0)
-    {
-        switch (request.method)
-        {
-        case HTTP_GET:
-            kvp_list_add(&response.headers, "Content-Type", "message/coffeepot");
-            if (coffee.brew_start_time == 0)
-            {
-                response.status = HTTP_STATUS_OK;
-                response_set_body(&response, "no coffee");
-            }
-            else
-            {
-                time_t current_time = time(NULL);
-                if (current_time > coffee.brew_start_time + SECONDS_TO_BREW_COFFEE)
-                {
-                    coffee.brew_start_time = 0;
-
-                    response.status = HTTP_STATUS_OK;
-                    // TODO: return coffee information
-                    response_set_body(&response, "coffee is done!");
-                }
-                else
-                {
-                    response.status = HTTP_STATUS_ACCEPTED;
-                    response_set_body(&response, "coffee is brewing");
-                }
-            }
-            break;
-        // TODO: add custom BREW method here, since it should do the exact same as POST
-        // possibly deferred because http_parser does not support non-standard methods
-        case HTTP_POST:
-        {
-            // get headers
-            const char *accept_additions;
-            const char *content_type;
-            for (int i = 0; i < request.headers.count; i++)
-            {
-                if (strcmp(request.headers.items[i].key, "Accept-Additions") == 0)
-                {
-                    accept_additions = request.headers.items[i].value;
-                }
-                if (strcmp(request.headers.items[i].key, "Content-Type") == 0)
-                {
-                    content_type = request.headers.items[i].value;
-                }
-            }
-
-            // check Content-Type
-            // NOTE: the spec has some ambiguity about whether Content-Type should be application/coffee-pot-command or message/coffeepot
-            //       but https://www.rfc-editor.org/errata/eid682 proposes to use message/coffeepot so that is what will be accepted here
-            if (strcmp(content_type, "message/coffeepot") == 0)
-            {
-                if (IS_TEAPOT)
-                {
-                    // a teapot cannot brew coffee
-                    response.status = 418;
-                    kvp_list_add(&response.headers, "Content-Type", "text/plain");
-                    response_set_body(&response, "short and stout");
-                    char *content_length = string_format("%lld", strlen(response.body));
-                    kvp_list_add(&response.headers, "Content-Length", content_length);
-                    free(content_length);
-                }
-                else
-                {
-                    if (strcmp(request.body, "start") == 0)
-                    {
-                        coffee.brew_start_time = time(NULL);
-
-                        // get length of header
-                        int accept_additions_length = strlen(accept_additions);
-
-                        // split header by ',' to get clauses
-                        int start_index = 0;
-                        for (int i = start_index; i < accept_additions_length; i++)
-                        {
-                            // check if a full clause has been found, either by the ',' character or the end of the header
-                            if (accept_additions[i] == ',' || i == accept_additions_length - 1)
-                            {
-                                // use start_index and current index (i) to get the clause
-                                int clause_length = i - start_index;
-                                if (i == accept_additions_length - 1)
-                                {
-                                    // if this is the last clause, prevent the last character from being cut off
-                                    clause_length += 1;
-                                }
-                                char *clause = malloc(clause_length + 1);
-                                strncpy(clause, accept_additions + start_index, clause_length);
-                                clause[clause_length] = 0;
-
-                                // split clause by ';' to get addition_type/parameter pairs
-                                for (int j = 0; j < clause_length; j++)
-                                {
-                                    if (clause[j] == ';')
-                                    {
-                                        // use current index (j) to get the addition_type
-                                        int addition_type_length = j;
-                                        char *addition_type = malloc(addition_type_length + 1);
-                                        strncpy(addition_type, clause, addition_type_length);
-                                        addition_type[addition_type_length] = 0;
-
-                                        // use length of the addition_type to get the parameter
-                                        int parameter_length = clause_length - addition_type_length;
-                                        char *parameter = malloc(parameter_length + 1);
-                                        strncpy(parameter, clause + addition_type_length + 1, parameter_length);
-                                        parameter[parameter_length] = 0;
-
-                                        // TODO: add supported additions to the coffee
-                                        printf("%s = %s\n", addition_type, parameter);
-
-                                        free(addition_type);
-                                        free(parameter);
-                                    }
-                                }
-
-                                free(clause);
-
-                                start_index = i + 1;
-                            }
-                        }
-
-                        response.status = HTTP_STATUS_OK;
-                    }
-                    else if (strcmp(request.body, "stop") == 0)
-                    {
-                        coffee.brew_start_time = 0;
-                        response.status = HTTP_STATUS_OK;
-                    }
-                    else
-                    {
-                        response.status = HTTP_STATUS_BAD_REQUEST;
-                    }
-                }
-            }
-            else
-            {
-                response.status = HTTP_STATUS_UNSUPPORTED_MEDIA_TYPE;
-            }
-            break;
-        }
-        // TODO: support custom WHEN method
-        default:
-            response.status = HTTP_STATUS_METHOD_NOT_ALLOWED;
-            break;
-        }
-    }
-    else
-    {
-        response.status = HTTP_STATUS_NOT_FOUND;
-    }
-
-    char *http_response = response_stringify(&response);
-    int http_response_length = strlen(http_response);
-    int total_bytes_sent = 0;
-    int bytes_left = http_response_length;
-    while (total_bytes_sent < http_response_length)
-    {
-        int bytes_sent = send(sockfd, http_response + total_bytes_sent, bytes_left, 0);
-        if (bytes_sent <= 0)
-        {
-            break;
-        }
-        total_bytes_sent += bytes_sent;
-        bytes_left -= bytes_sent;
-    }
-    free(http_response);
-
-    response_free(&response);
-
-    request_free(&request);
-
-    // TODO: use Connection: Keep-Alive here? not quite sure how that's supposed to work
-    shutdown(sockfd, SD_BOTH);
-    closesocket(sockfd);
-}
-
-struct thread_context
-{
-    struct queue *queue;
-    pthread_mutex_t *mutex;
-    pthread_cond_t *cond;
-};
-
 void *worker(void *arg)
 {
     struct thread_context *thread_context = (struct thread_context *)arg;
+    pthread_mutex_t *mutex = thread_context->mutex;
+    pthread_cond_t *cond = thread_context->cond;
+    struct queue *queue = thread_context->queue;
+    struct coffee *coffee = thread_context->coffee;
 
     for (;;)
     {
         // check for work on the queue
-        pthread_mutex_lock(thread_context->mutex);
-        int *p_sockfd = queue_dequeue(thread_context->queue);
+        pthread_mutex_lock(mutex);
+        int *p_sockfd = queue_dequeue(queue);
         if (!p_sockfd)
         {
             // did not get work, so wait for signal
-            pthread_cond_wait(thread_context->cond, thread_context->mutex);
-            p_sockfd = queue_dequeue(thread_context->queue);
+            pthread_cond_wait(cond, mutex);
+            p_sockfd = queue_dequeue(queue);
         }
-        pthread_mutex_unlock(thread_context->mutex);
+        pthread_mutex_unlock(mutex);
 
         if (p_sockfd)
         {
-            // do the work upon successful dequeue
-            respond(*p_sockfd);
+            // respond to the message upon successful dequeue
+            int sockfd = *p_sockfd;
+
+            struct request request;
+            memset(&request, 0, sizeof(request));
+
+            http_parser parser;
+            http_parser_init(&parser, HTTP_REQUEST);
+            parser.data = &request;
+
+            http_parser_settings settings;
+            http_parser_settings_init(&settings);
+            settings.on_message_begin = &on_message_begin;
+            settings.on_url = &on_url;
+            settings.on_header_field = &on_header_field;
+            settings.on_header_value = &on_header_value;
+            settings.on_body = &on_body;
+
+            // TODO: use a loop rather than just a large buffer
+            char http_request[65536];
+            int bytes_received = recv(sockfd, http_request, sizeof(http_request), 0);
+            if (bytes_received <= 0)
+            {
+                goto no_response;
+            }
+
+            int bytes_parsed = http_parser_execute(&parser, &settings, http_request, bytes_received);
+            if (parser.upgrade)
+            {
+                printf("UPGRADE\n");
+
+                // TODO: handle other protocols?
+                goto no_response;
+            }
+            else if (bytes_parsed != bytes_received)
+            {
+                printf("ERROR :%s: %s\n", http_errno_name(parser.http_errno), http_errno_description(parser.http_errno));
+
+                goto no_response;
+            }
+
+            printf("METHOD: %s\n", http_method_str(request.method));
+            printf("PATH: %s\n", request.path);
+            for (int i = 0; i < request.queries.count; i++)
+            {
+                printf("QUERY: %s = %s\n", request.queries.items[i].key, request.queries.items[i].value);
+            }
+            for (int i = 0; i < request.headers.count; i++)
+            {
+                printf("HEADER: %s: %s\n", request.headers.items[i].key, request.headers.items[i].value);
+            }
+            printf("BODY: %s\n", request.body);
+
+            struct response response;
+            memset(&response, 0, sizeof(response));
+
+            // TODO: implement full spec
+            // https://tools.ietf.org/html/rfc2324
+            if (strcmp(request.path, "/") == 0)
+            {
+                switch (request.method)
+                {
+                case HTTP_GET:
+                    kvp_list_add(&response.headers, "Content-Type", "message/coffeepot");
+                    if (coffee->brew_start_time == 0)
+                    {
+                        response.status = HTTP_STATUS_OK;
+                        response_set_body(&response, "no coffee");
+                    }
+                    else
+                    {
+                        time_t current_time = time(NULL);
+                        if (current_time > coffee->brew_start_time + SECONDS_TO_BREW_COFFEE)
+                        {
+                            coffee->brew_start_time = 0;
+
+                            response.status = HTTP_STATUS_OK;
+                            // TODO: return coffee information
+                            response_set_body(&response, "coffee is done!");
+                        }
+                        else
+                        {
+                            response.status = HTTP_STATUS_ACCEPTED;
+                            response_set_body(&response, "coffee is brewing");
+                        }
+                    }
+                    break;
+                // TODO: add custom BREW method here, since it should do the exact same as POST
+                // possibly deferred because http_parser does not support non-standard methods
+                case HTTP_POST:
+                {
+                    // get headers
+                    const char *accept_additions;
+                    const char *content_type;
+                    for (int i = 0; i < request.headers.count; i++)
+                    {
+                        if (strcmp(request.headers.items[i].key, "Accept-Additions") == 0)
+                        {
+                            accept_additions = request.headers.items[i].value;
+                        }
+                        if (strcmp(request.headers.items[i].key, "Content-Type") == 0)
+                        {
+                            content_type = request.headers.items[i].value;
+                        }
+                    }
+
+                    // check Content-Type
+                    // NOTE: the spec has some ambiguity about whether Content-Type should be application/coffee-pot-command or message/coffeepot
+                    //       but https://www.rfc-editor.org/errata/eid682 proposes to use message/coffeepot so that is what will be accepted here
+                    if (strcmp(content_type, "message/coffeepot") == 0)
+                    {
+                        if (IS_TEAPOT)
+                        {
+                            // a teapot cannot brew coffee
+                            response.status = 418;
+                            kvp_list_add(&response.headers, "Content-Type", "text/plain");
+                            response_set_body(&response, "short and stout");
+                            char *content_length = string_format("%lld", strlen(response.body));
+                            kvp_list_add(&response.headers, "Content-Length", content_length);
+                            free(content_length);
+                        }
+                        else
+                        {
+                            if (strcmp(request.body, "start") == 0)
+                            {
+                                coffee->brew_start_time = time(NULL);
+
+                                // get length of header
+                                int accept_additions_length = strlen(accept_additions);
+
+                                // split header by ',' to get clauses
+                                int start_index = 0;
+                                for (int i = start_index; i < accept_additions_length; i++)
+                                {
+                                    // check if a full clause has been found, either by the ',' character or the end of the header
+                                    if (accept_additions[i] == ',' || i == accept_additions_length - 1)
+                                    {
+                                        // use start_index and current index (i) to get the clause
+                                        int clause_length = i - start_index;
+                                        if (i == accept_additions_length - 1)
+                                        {
+                                            // if this is the last clause, prevent the last character from being cut off
+                                            clause_length += 1;
+                                        }
+                                        char *clause = malloc(clause_length + 1);
+                                        strncpy(clause, accept_additions + start_index, clause_length);
+                                        clause[clause_length] = 0;
+
+                                        // split clause by ';' to get addition_type/parameter pairs
+                                        for (int j = 0; j < clause_length; j++)
+                                        {
+                                            if (clause[j] == ';')
+                                            {
+                                                // use current index (j) to get the addition_type
+                                                int addition_type_length = j;
+                                                char *addition_type = malloc(addition_type_length + 1);
+                                                strncpy(addition_type, clause, addition_type_length);
+                                                addition_type[addition_type_length] = 0;
+
+                                                // use length of the addition_type to get the parameter
+                                                int parameter_length = clause_length - addition_type_length;
+                                                char *parameter = malloc(parameter_length + 1);
+                                                strncpy(parameter, clause + addition_type_length + 1, parameter_length);
+                                                parameter[parameter_length] = 0;
+
+                                                // TODO: add supported additions to the coffee
+                                                printf("%s = %s\n", addition_type, parameter);
+
+                                                free(addition_type);
+                                                free(parameter);
+                                            }
+                                        }
+
+                                        free(clause);
+
+                                        start_index = i + 1;
+                                    }
+                                }
+
+                                response.status = HTTP_STATUS_OK;
+                            }
+                            else if (strcmp(request.body, "stop") == 0)
+                            {
+                                coffee->brew_start_time = 0;
+                                response.status = HTTP_STATUS_OK;
+                            }
+                            else
+                            {
+                                response.status = HTTP_STATUS_BAD_REQUEST;
+                            }
+                        }
+                    }
+                    else
+                    {
+                        response.status = HTTP_STATUS_UNSUPPORTED_MEDIA_TYPE;
+                    }
+                    break;
+                }
+                // TODO: support custom WHEN method
+                default:
+                    response.status = HTTP_STATUS_METHOD_NOT_ALLOWED;
+                    break;
+                }
+            }
+            else
+            {
+                response.status = HTTP_STATUS_NOT_FOUND;
+            }
+
+            char *http_response = response_stringify(&response);
+            int http_response_length = strlen(http_response);
+            int total_bytes_sent = 0;
+            int bytes_left = http_response_length;
+            while (total_bytes_sent < http_response_length)
+            {
+                int bytes_sent = send(sockfd, http_response + total_bytes_sent, bytes_left, 0);
+                if (bytes_sent <= 0)
+                {
+                    break;
+                }
+                total_bytes_sent += bytes_sent;
+                bytes_left -= bytes_sent;
+            }
+            free(http_response);
+
+            response_free(&response);
+
+        no_response:
+            request_free(&request);
+
+            // TODO: use Connection: Keep-Alive here? not quite sure how that's supposed to work
+            shutdown(sockfd, SD_BOTH);
+            closesocket(sockfd);
         }
     }
 }
@@ -459,28 +461,31 @@ int main(int argc, char *argv[])
     // start listening for requests
     listen(sockfd, SOMAXCONN);
 
-    // create work queue
-    struct queue queue;
-    memset(&queue, 0, sizeof(queue));
-
     // setup thread pool
     pthread_t thread_pool[THREAD_POOL_SIZE];
     pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
     pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
 
+    // create work queue
+    struct queue queue;
+    memset(&queue, 0, sizeof(queue));
+
+    // setup coffee state
+    struct coffee coffee;
+    memset(&coffee, 0, sizeof(coffee));
+
     // setup shared thread variables
     struct thread_context thread_context;
-    thread_context.queue = &queue;
     thread_context.mutex = &mutex;
     thread_context.cond = &cond;
+    thread_context.queue = &queue;
+    thread_context.coffee = &coffee;
 
     // start worker threads
     for (int i = 0; i < THREAD_POOL_SIZE; i++)
     {
         pthread_create(&thread_pool[i], NULL, &worker, &thread_context);
     }
-
-    coffee.brew_start_time = 0;
 
     for (;;)
     {
